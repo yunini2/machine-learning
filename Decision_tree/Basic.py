@@ -48,5 +48,88 @@ class Cluster:
             self._gini_cache = _gini_cache
         return _gini_cache
     # 定义计算H(y|A)和Gini(y|A)的函数
-    
+    def con_chaos(self, idx, criterion = "ent", features = None):
+        # 根据不同准则，调用不同方法
+        if criterion == "ent":
+            _method = lambda cluster: cluster.ent()
+        elif criterion == "gini":
+            _method = lambda cluster: cluster.gini()
+        # 根据输入获取相应维度的向量
+        data = self._x[idx]
+        # 如果调用时没有给该维度的取值空间features，就调用set方法获得取值空间
+        # 由于调用set方法比较耗时，在决策树实现时尽力将features传入
+        if features is None:
+            features = set(data)
+        # 获得该维度特征各取值所对应的数据的下标
+        # 用self._con_chaos_cache记录下相应结果以加速后面定义的函数
+        tmp_labels = [data == feature for feature in features]
+        self._con_chaos_cache = [np.sum(_label) for _label in tmp_labels]
+        # 利用下标获取相应的类别向量
+        label_lst = [self._y[label] for label in tmp_labels]
+        rs, chaos_lst = 0, []
+        # 遍历各下标和对应的类别向量
+        for data_label, tar_label in zip(tmp_labels, label_lst):
+            # 获取相应数据
+            tmp_data = self._x.T[data_label]
+            # 根据相应数据、类别向量和样本权重计算出不确定性
+            if self._sample_weight is None:
+                _chaos = _method(Cluster(tmp_data, tar_label, base=self._base))
+            else:
+                _new_weights = self._sample_weight[data_label]
+                _chaos = _method(Cluster(tmp_data, tar_label,  _new_weights / np.sum(_new_weights), base=self._base))
+            # 依概率加权，同时把各个初始条件不确定性记录下来
+            rs += len(tmp_data) / len(data) * _chaos
+            chaos_lst.append(_chaos)
+        return rs, chaos_lst
+    # 定义计算信息增益函数，参数get_chaos_lst用于控制输出
+    def info_gain(self, idx, criterion = "ent", get_chaos_lst = False, features = None):
+        # 根据不同准则，获取相应的"条件不确定性"
+        if criterion in ("ent", "ratio"):
+            _con_chaos, _chao_lst = self.con_chaos(idx, "ent", features)
+            _gain = self.ent() - _con_chaos
+            if criterion == "ratio":
+                _gain /= self.ent(self._con_chaos_cache)
+        elif criterion == "gini":
+            _con_chaos, _chao_lst = self.con_chaos(idx, "gini", features)
+            _gain = self.gini() - _con_chaos
+        return (_gain, _chao_lst) if get_chaos_lst else _gain
+    # 定义二分类问题条件不确定函数
+    # 参数tar是二分标准，参数continuous告诉我们该维度的特征是否连续
+    def bin_con_chaos(self, idx, tar, criterion = "gini", continuous = False):
+        if criterion == "ent":
+            _method = lambda cluster:cluster.ent()
+        elif criterion == "gini":
+            _method = lambda cluster: cluster.gini()
+        data = self._x[idx]
+        # 根据二分标准划分数据，需要考虑离散和连续两种情况
+        tar = data == tar if not continuous else data < tar
+        tmp_labels = [tar, ~tar]
+        self._con_chaos_cache = [np.sum(_label) for _label in tmp_labels]
+        label_lst = [self._y[label] for label in tmp_labels]
+        rs, chaos_lst = 0, []
+        for data_label, tar_label in zip(tmp_labels, label_lst):
+            tmp_data = self._x.T[data_label]
+            if self._sample_weight is None:
+                _chaos = _method(Cluster(tmp_data, tar_label, base= self._base))
+            else:
+                _new_weights = self._sample_weight[data_label]
+                _chaos = _method(Cluster(tmp_data, tar_label, _new_weights / np.sum(_new_weights), base=self._base))
+            rs += len(tmp_data) / len(data) * _chaos
+            chaos_lst.append(_chaos)
+        return rs, chaos_lst
+    def bin_info_gain(self, idx, tar, criterion = "gini", get_chaos_lst = False, continuous = False):
+        if criterion in ("ent", "ratio"):
+            _con_chaos, _chao_lst = self.bin_con_chaos(idx, tar, "ent", continuous)
+            gain = self.ent() - _con_chaos
+            if criterion == "ratio":
+                gain = gain / self.ent(self._con_chaos_cache)
+        elif criterion == "gini":
+            _con_chaos, _chao_lst = self.bin_con_chaos(idx, tar, "gini", continuous)
+            gain = self.gini() - _con_chaos
+        else:
+            raise NotImplementedError("Info gain criterion '{}' not define".format(criterion))
+        return (gain, _chao_lst) if get_chaos_lst else gain
+
+
+
 
