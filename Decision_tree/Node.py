@@ -1,5 +1,5 @@
 import numpy as np
-from Basic import Cluster
+from Decision_tree.Basic import Cluster
 
 # 定义一个足够抽象的基类以囊括所有算法ID3、C4.5、CART
 class CvDNode:
@@ -101,3 +101,34 @@ class CvDNode:
         while _parent is not None:
             _parent.leafs[id(self)] = self.info_dic
             _parent = _parent.parent
+    # 定义一个方法使其能将一个有子节点的Node转化为叶节点
+    # 定义一个方法使其能挑选出最好的划分标准
+    # 定义一个方法使其能根据划分标准进行生成
+    def prune(self):
+        # 调用相应方法进行计算该Node所属类别
+        self.category = self.get_category()
+        # 记录由于该Node转化为叶节点而被剪去的、下属叶节点
+        _pop_lst = [key for key in self.leafs]
+        # 一路回溯，更新各个parent的属性leafs
+        _parent = self.parent
+        while _parent is not None:
+            for k in _pop_lst:
+                # 删掉由于局部剪枝而被减掉的叶节点
+                _parent.pop(k)
+            _parent.leafs[id(self)] = self.info_dic
+            _parent = _parent.parent
+        # 调用mark_pruned方法将自己所有的子节点、子节点的子节点的pruned属性置为True，因为他们都被剪掉
+        self.mark_pruned()
+        # 重置各个属性
+        self.feature_dim = None
+        self.left_child = self.right_child = None
+        self._children = {}
+        self.leafs = {}
+    # mark_pruned()用于给各个被局部剪枝剪掉的Node打一个标记、Tree可以根据这些标记将剪掉的Node从它记录所有Node的列表nodes删去
+    def mark_pruned(self):
+        self.pruned = True
+        # 如果当前的子节点不是None的话，递归调用mark_pruned方法
+        # 连续型特征和CART算法有可能导致children中出现None
+        for _child in self.children.values():
+            if _child is not None:
+                _child.mark_pruned()
