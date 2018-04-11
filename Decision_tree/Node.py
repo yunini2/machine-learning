@@ -1,5 +1,6 @@
 import numpy as np
 from Decision_tree.Basic import Cluster
+import math
 
 # 定义一个足够抽象的基类以囊括所有算法ID3、C4.5、CART
 class CvDNode:
@@ -132,3 +133,133 @@ class CvDNode:
         for _child in self.children.values():
             if _child is not None:
                 _child.mark_pruned()
+
+    def fit(self, x, y, sample_weight, feature_bound = None,eps=1e-8):
+        self._x, self._y = np.atleast_2d(x), np.array(y)
+        self.sample_weight = sample_weight
+        # 若满足第一停止条件，退出函数体
+        if self.stop1(eps):
+            return
+        # 用该Node的数据实例化Cluster类以计算各种信息量
+        _cluster = Cluster(self._x, self._y, sample_weight, self.base)
+        # 对于根节点，需要额外计算其不确定性
+        if self.is_root:
+            if self.criterion == "gini":
+                self.chaos = _cluster.gini()
+            else:
+                self.chaos = _cluster.ent()
+        _max_gain, _chaos_lst = 0, []
+        _max_feature = _max_tar = None
+        feat_len = len(self.feats)
+        if feature_bound is None:
+            indices = range(0, feat_len)
+        elif feature_bound == "log":
+            indices = np.random.permutation(feat_len)[:max(1, int(math.log2(feat_len)))]
+        else:
+            indices = np.random.permutation(feat_len)[:feature_bound]
+        tmp_feats = [self.feats[i] for i in indices]
+        xt, feat_sets = self._x.T, self.tree.feature_sets
+        bin_ig, ig = _cluster.bin_info_gain, _cluster.info_gain
+        # 遍历还能选择的特征
+        for feat in tmp_feats:
+            # 如果是连续型特征或是CART算法，需要额外计算二分标准的取值集合
+            if self.wc[feat]:
+                _samples = np.sort(xt[feat])
+                _set = (_samples[:-1] + _samples[1:]) * 0.5
+            else:
+                if self.is_cart:
+                    _set = feat_sets[feat]
+                else:
+                    _set = None
+            # 然后遍历这些二分标准并调用二类问题相关的计算信息量的方法
+            if self.is_cart or self.wc[feat]:
+                for tar in _set:
+                    _tmp_gain, _tmp_chaos_lst = bin_ig(feat, tar, criterion=self.criterion,
+                                                                       get_chaos_lst = True, continuous=self.wc[feat])
+                    if _tmp_gain > _max_gain:
+                        (_max_gain, _chaos_lst), _max_feature, _max_tar = (_tmp_gain, _tmp_chaos_lst), feat, tar
+            # 对于离散型特征ID3和C4.5算法，调用普通的计算信息量的方法
+            else:
+                _tmp_gain, _tmp_chaos_lst = ig(
+                    feat, criterion=self.criterion, get_chaos_lst=True, features=self.tree.feature_sets[feat])
+                if _tmp_gain > _max_gain:
+                    (_max_gain, _chaos_lst), _max_feature = (_tmp_gain, _tmp_chaos_lst), feat
+        # 若满足第二种停止准则，则退出函数体
+        if self.stop2(_max_gain, eps):
+            return
+        # 更新相关属性
+        self.feature_dim = _max_feature
+        if self.is_cart or self.wc[_max_feature]:
+            self.tar = _max_tar
+            # 调用根据划分标准进行生成的方法
+            self._gen_children(_chaos_lst)
+            # 如果该Node的左子节点和右子节点都是叶节点且所属类别一样，那么就将他们合并，局部剪枝
+            if (self.left_child.category is not None and self.left_child.category == self.right_child.category):
+                self.prune()
+                # 调用Tree的相关方法，将被剪掉的该Node的左右子节点从Tree的记录所有Node列表nodes中除去
+                self.tree.reduce_nodes()
+        else:
+            # 调用根据划分标准进行生成的方法
+            self._gen_children(_chaos_lst)
+
+    def _gen_children(self, chao_lst, feature_bound):
+        feat, tar = self.feature_dim, self.tar
+        self.is_continuous = continuous = self.wc[feat]
+        features = self._x[..., feat]
+        new_feats = self.feats.copy()
+        if continuous:
+            mask = features < tar
+            masks = [mask, ~mask]
+        else:
+            if self.is_cart:
+                mask = features == tar
+                masks = [mask, ~mask]
+                self.tree.feature_sets[feat].discard(tar)
+            else:
+                masks = None
+        if self.is_cart or continuous:
+            feats = [tar, "+"] if not continuous else ["{:6.4}-".format(tar), "{:6.4}+".format(tar)]
+            for feat, side, chaos in zip(feats, ["left_child", "right_child"], chao_lst):
+                new_node = self.__class__(
+                    self.tree, self.base, chaos=chaos, depth=self._depth + 1, parent=self, is_root=False, prev_feat=feat
+                )
+                new_node.criterion = self.criterion
+                setattr(self, side, new_node) # setattr用于为side设置属性值
+            for node, feat_mask in zip([self.left_child, self.right_child], masks):
+                if self.sample_weight is None:
+                    local_weights = None
+                else:
+                    local_weights = self.sample_weight[feat_mask]
+                    local_weights /= np.sum(local_weights)
+                tmp_data, tmp_labels = self._x[feat_mask, ...], self._y[feat_mask]
+                if len(tmp_labels) == 0:
+                    continue
+                node.feats = new_feats
+                node.fit(tmp_data, tmp_labels, local_weights, feature_bound)
+        else:
+            new_feats.remove(self.feature_dim)
+            for feat, chaos in zip(self.tree.feature_sets[self.feature_dim], chao_lst):
+                feat_mask = features == feat
+                tmp_x = self._x[feat_mask, ...]
+                if len(tmp_x) == 0:
+                    continue
+                new_node = self.__class__(
+                    tree=self.tree, base = self.base, chaos = chaos,
+                    depth=self._depth + 1, parent=self, is_root=False, prev_feat=feat
+                )
+                new_node.feats = new_feats
+                self.children[feat] = new_node
+                if self.sample_weight is None:
+                    local_weights = None
+                else:
+                    local_weights = self.sample_weight[feat_mask]
+                    local_weights /= np.sum(local_weights)
+                new_node.fit(tmp_x, self._y[feat_mask], local_weights, feature_bound)
+
+    
+
+
+
+
+
+
