@@ -206,7 +206,7 @@ class CvDNode(metaclass=TimingMeta):
         if self.is_cart or self.wc[_max_feature]:
             self.tar = _max_tar
             # 调用根据划分标准进行生成的方法
-            self._gen_children(_chaos_lst)
+            self._gen_children(_chaos_lst, feature_bound)
             # 如果该Node的左子节点和右子节点都是叶节点且所属类别一样，那么就将他们合并，局部剪枝
             if (self.left_child.category is not None and self.left_child.category == self.right_child.category):
                 self.prune() # prune是对剪枝算法的封装
@@ -214,7 +214,7 @@ class CvDNode(metaclass=TimingMeta):
                 self.tree.reduce_nodes()
         else:
             # 调用根据划分标准进行生成的方法
-            self._gen_children(_chaos_lst)
+            self._gen_children(_chaos_lst, feature_bound)
 
     def _gen_children(self, chao_lst, feature_bound):
         feat, tar = self.feature_dim, self.tar

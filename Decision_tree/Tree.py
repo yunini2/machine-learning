@@ -120,37 +120,37 @@ class CvDBase(ClassifierBase):
     @CvDBaseTiming.timeit(level=1)
     def _prune(self):
         self._update_layers()
-        _tmp_nodes = []
+        tmp_nodes = []
         # 更新完决策树每一层Node后，从后往前向_tmp_nodes中加Node
-        for _node_lst in self.layers[::-1]:
-            for _node in _node_lst[::-1]:
-                if _node.category is None:
-                    _tmp_nodes.append(_node)
-        _old = np.array([_node.cost() + self.prune_alpha * len(_node.leafs) for _node in _tmp_nodes])
-        _new = np.array([_node.cost(pruned=True) + self.prune_alpha for node in _tmp_nodes])
+        for node_lst in self.layers[::-1]:
+            for node in node_lst[::-1]:
+                if node.category is None:
+                    tmp_nodes.append(node)
+        old = np.array([node.cost() + self.prune_alpha * len(node.leafs) for node in tmp_nodes])
+        new = np.array([node.cost(pruned=True) + self.prune_alpha for node in tmp_nodes])
         # 使用mask变量存储_old和_new对应位置的大小关系
-        _mask = _old >= _new
+        mask = old >= new
         while True:
             # 若只剩下根节点就退出循环
             if self.root.height == 1:
                 break
-            p = np.argmax(_mask)
+            p = np.argmax(mask) # int
             # 如果_new中有比_old中对应损失小的损失，则进行局部剪枝
-            if _mask[p]:
-                _tmp_nodes[p].prune()
+            if mask[p]:
+                tmp_nodes[p].prune()
                 # 根据被影响了的node，更新_old _mask对应位置的值
-                for i, node in enumerate(_tmp_nodes):
+                for i, node in enumerate(tmp_nodes):
                     if node.affected:
-                        _old[i] = node.cost() + self.prune_alpha * len(node.leafs)
-                        _mask[i] = _old >= _new[i]
+                        old[i] = node.cost() + self.prune_alpha * len(node.leafs)
+                        mask[i] = old >= new[i]
                         node.affected = False
                 # 根据被剪掉的Node， 将各个变量对应的位置除去
-                for i in range(len(_tmp_nodes)-1, -1, -1):
-                    if _tmp_nodes[i].pruned:
-                        _tmp_nodes.pop(i)
-                        _old = np.delete(_old, i)
-                        _new = np.delete(_new, i)
-                        _mask - np.delete(_mask, i)
+                for i in range(len(tmp_nodes)-1, -1, -1):
+                    if tmp_nodes[i].pruned:
+                        tmp_nodes.pop(i)
+                        old = np.delete(old, i)
+                        new = np.delete(new, i)
+                        mask - np.delete(mask, i)
             else:
                 break
         self.reduce_nodes()
@@ -159,8 +159,8 @@ class CvDBase(ClassifierBase):
     def _cart_prune(self):
         # 暂时将所有节点记录所属Tree的属性置为None
         self.root.cut_tree() # cut_tree同样利用递归实现
-        _tmp_nodes = [node for node in self.nodes if node.category is None]
-        _thresholds = np.array([node.get_threshold() for node in _tmp_nodes])
+        tmp_nodes = [node for node in self.nodes if node.category is None]
+        thresholds = np.array([node.get_threshold() for node in tmp_nodes])
         while True:
             # 利用deepcopy对当前根节点进行深拷贝，存入self.roots列表，如果前面没有把记录Tree的属性置为None
             # 这里就要对整个Tree做深拷贝，会引发严重的内存问题，还会拖慢速度
@@ -168,18 +168,19 @@ class CvDBase(ClassifierBase):
             self.roots.append(root_copy)
             if self.root.height == 1:
                 break
-            p =np.argmin(_thresholds)
-            _tmp_nodes[p].prune()
-            for i, node in enumerate(_tmp_nodes):
+            p = np.argmin(thresholds)
+            tmp_nodes[p].prune()
+            for i, node in enumerate(tmp_nodes):
                 # 更新被影响的Node阈值
                 if node.affected:
-                    _thresholds[i] = node.get_threshold()
+                    thresholds[i] = node.get_threshold()
                     node.affected = False
-            for i in range(len(_tmp_nodes)-1, -1, -1):
+            pop = tmp_nodes.pop
+            for i in range(len(tmp_nodes)-1, -1, -1):
                 # 去除掉各列表相应位置的元素
-                if _tmp_nodes[i].pruned:
-                    _tmp_nodes.pop(i)
-                    _thresholds = np.delete(_thresholds, i)
+                if tmp_nodes[i].pruned:
+                    pop(i)
+                    thresholds = np.delete(thresholds, i)
         self.reduce_nodes()
 
     @CvDBaseTiming.timeit(level=3, prefix="[Util] ")
@@ -188,12 +189,12 @@ class CvDBase(ClassifierBase):
             # 如果该Node使用CART剪枝，那么只有在确实传入了交叉验证集的情况下才能调用相关函数，否则没有意义
             if x_cv is not None and y_cv is not None:
                 self._cart_prune()
-                _arg = np.argmax([CvDBase.acc(y_cv, tree.predit(x_cv), weights) for tree in self.roots])
-                _tar_root = self.roots[_arg]
+                arg = np.argmax([CvDBase.acc(y_cv, tree.predit(x_cv), weights) for tree in self.roots])
+                tar_root = self.roots[arg]
                 # 由于Node的feed_tree方法会递归的更新nodes属性，所以要先重置
                 self.nodes = []
-                _tar_root.feed_tree(self)
-                self.root = _tar_root
+                tar_root.feed_tree(self)
+                self.root = tar_root
             else:
                 self._prune()
     # Util
