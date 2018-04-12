@@ -1,9 +1,10 @@
 import numpy as np
 from Decision_tree.Basic import Cluster
 import math
+from Util.Metas import TimingMeta
 
 # 定义一个足够抽象的基类以囊括所有算法ID3、C4.5、CART
-class CvDNode:
+class CvDNode(metaclass=TimingMeta):
     '''
     初始化结构
     self._x, self._y:记录数据集的变量
@@ -24,7 +25,9 @@ class CvDNode:
     self.is_continuous: 记录该Node选择的划分标准对应的特征是否连续
     self.pruned:记录该Node是否已被剪掉，后面实现局部剪枝算法用到
     '''
-    def __init__(self, tree = None, base = 2, chaos = None, depth = 0, parent = None, is_root = True, prev_feat = "Root"):
+
+    def __init__(self, tree = None, base = 2, chaos = None, depth = 0,
+                 parent = None, is_root = True, prev_feat = "Root", **kwargs):
         self._x = self._y = None
         self.base, self.chaos = base, chaos
         self.criterion = self.category = None
@@ -33,6 +36,7 @@ class CvDNode:
         self.sample_weight = None
         self.wc = None
         self.tree = tree
+
         # 如果传入了Tree的话进行相应的初始化
         if tree is not None:
             # 由于数据预处理由Tree完成，所有各个维度的特征是否是连续型随机变量也是由Tree记录的
@@ -43,6 +47,7 @@ class CvDNode:
         self.parent, self.is_root = parent, is_root
         self._depth, self.prev_feat = depth, prev_feat
         self.is_cart = self.is_continuous = self.pruned = False
+
     def __getitem__(self, item):
         if isinstance(item, str):
             return getattr(self, "_" + item)
@@ -51,10 +56,16 @@ class CvDNode:
         return self.prev_feat < other.prev_feat
     # 重载__str__和__repr__方法，同样为了便于调试和可视化
     def __str__(self):
+        return  self.__class__.__name__
+
+    __repr__ = __str__
+
+    @property
+    def info(self):
         if self.category is None:
             return "CvDNode ({}) ({}->{})".format(self._depth, self.prev_feat, self.feature_dim)
         return "CvDNode ({}) ({}-> class:{})".format(self._depth, self.prev_feat, self.tree.label_dic[self.category])
-    __repr__ = __str__
+
     # 定义children属性，区分开连续+CART情况和其余情况
     # 有了这个属性后，想要获得所有子节点就不用分情况讨论了
     @property
@@ -62,6 +73,7 @@ class CvDNode:
         return {
             "left": self.left_child, "right": self.right_child
         }if (self.is_cart or self.is_continuous) else self._children
+
     # 递归定义height属性
     # 叶节点高度都定义为1，其余节点的高度定义为最高的子节点告诉+1
     @property
@@ -69,11 +81,13 @@ class CvDNode:
         if self.category is not None:
             return 1
         return 1 + max([_child.height if _child is not None else 0 for _child in self.children.values()])
+
     # 定义info_dic(信息字典)属性，记录了该Node的主要信息
     # 在更新各个Node的叶节点时，被记录进各个self.leafs属性的就是该字典
     @property
     def info_dic(self):
         return {"chaos": self.chaos, "y":self._y}
+
     # 定义第一种停止准则：当特征维度为0或当前Node数据的不确定性小于阈值时停止
     # 同时，如果用户指定了决策树的最大深度，当该Node的深度太深也停止
     # 若满足停止条件，该函数会返回True，否则返回False
@@ -195,7 +209,7 @@ class CvDNode:
             self._gen_children(_chaos_lst)
             # 如果该Node的左子节点和右子节点都是叶节点且所属类别一样，那么就将他们合并，局部剪枝
             if (self.left_child.category is not None and self.left_child.category == self.right_child.category):
-                self.prune()
+                self.prune() # prune是对剪枝算法的封装
                 # 调用Tree的相关方法，将被剪掉的该Node的左右子节点从Tree的记录所有Node列表nodes中除去
                 self.tree.reduce_nodes()
         else:
@@ -256,10 +270,89 @@ class CvDNode:
                     local_weights /= np.sum(local_weights)
                 new_node.fit(tmp_x, self._y[feat_mask], local_weights, feature_bound)
 
-    
+
+
+    # 在Tree.py中调用feed_tree方法
+    def feed_tree(self, tree):
+        self.tree = tree # 让决策树中所有的Node记录他们所属的Tree结构
+        self.tree.nodes.append(self) # 将自己记录在Tree中记录所有Node的列表nodes里
+        self.wc = tree.whether_continuous # 根据Tree的相应属性更新记录连续特征的列表
+        for child in self.children.values():
+            if child is not None:
+                child.feed_tree(tree)
+    # 利用递归定义一个函数更新Tree的self.layers属性
+
+    def update_layers(self):
+        # 根据该node的深度，在self.layers对应位置的列表中记录自己
+        self.tree.layers[self._depth].append(self)
+        # 遍历所有子节点，完成递归
+        for _node in sorted(self.children):
+            _node = self.children[_node]
+            if _node is not None:
+                _node.update_layers()
+
+    # 定义损失函数
+    def cost(self, pruned = False):
+        if not pruned:
+            return sum([leaf["chaos"] * len(leaf["y"]) for leaf in self.leafs.values()])
+        return self.chaos * len(self._y)
+
+
+    # 在CART算法中，定义一个获取Node阈值的函数
+    def get_threshold(self):
+        return (self.cost(pruned=True) - self.cost()) / (len(self.leafs) -1)
+
+    # 定义cut_tree
+    def cut_tree(self):
+        self.tree = None
+        for child in self.children.values():
+            if child is not None:
+                child.cut_tree()
+
+
+    def predict_one(self, x):
+        if self.category is not None:
+            return self.category
+        if self.is_continuous:
+            if x[self.feature_dim] < self.tar:
+                return self.left_child.predict_one(x)
+            return self.right_child.predict_one(x)
+        if self.is_cart:
+            if x[self.feature_dim] == self.tar:
+                return self.left_child.predict_one(x)
+            return self.right_child.predict_one(x)
+        else:
+            try:
+                return self.children[x[self.feature_dim]].predict_one(x)
+            except KeyError:
+                return self.get_category()
+
+    def predict(self, x):
+        return np.array([self.predict_one(xx) for xx in x])
+
+    def view(self, indent = 4):
+        print(" " * indent * self._depth, self.info)
+        for node in sorted(self.children):
+            node = self.children[node]
+            if node is not None:
+                node.view()
 
 
 
+class ID3Node(CvDNode):
+    def __init__(self, *args, **kwargs):
+        CvDNode.__init__(self, *args, **kwargs)
+        self.criterion = "ent"
 
 
+class C45Node(CvDNode):
+    def __init__(self, *args, **kwargs):
+        CvDNode.__init__(self, *args, **kwargs)
+        self.criterion = "ratio"
+
+class CartNode(CvDNode):
+    def __init__(self, *args, **kwargs):
+        CvDNode.__init__(self, *args, **kwargs)
+        self.criterion = "gini"
+        self.is_cart = True
 
